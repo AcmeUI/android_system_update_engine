@@ -33,13 +33,17 @@ struct erofs_iterate_dir_context {
 // erofs_iterate_dir_context must be put at 0 offset.
 static_assert(offsetof(erofs_iterate_dir_context, ctx) == 0);
 
+static struct erofs_sb_info *_sbi = nullptr;
+
 // Callable shold be a functor like
 // std::function<int(struct erofs_inode_info *)>
 template <typename Callable>
-int erofs_iterate_root_dir(const struct erofs_sb_info* sbi, Callable cb) {
+int erofs_iterate_root_dir(struct erofs_sb_info* sbi, Callable cb) {
   struct erofs_inode dir {
+    .sbi = sbi,
     .nid = sbi->root_nid
   };
+  _sbi = sbi;
   int err = erofs_read_inode_from_disk(&dir);
   if (err) {
     LOG(ERROR) << "Failed to read inode " << sbi->root_nid << " from disk";
@@ -58,7 +62,7 @@ int erofs_iterate_root_dir(const struct erofs_sb_info* sbi, Callable cb) {
       const auto err = (*cb)(ctx);
       if (!err && !ctx->ctx.dot_dotdot && ctx->ctx.de_ftype == EROFS_FT_DIR) {
         // recursively walk into subdirectories
-        erofs_inode dir{.nid = ctx->ctx.de_nid};
+        erofs_inode dir{ .sbi = _sbi, .nid = ctx->ctx.de_nid };
         if (const int err = erofs_read_inode_from_disk(&dir); err) {
           return err;
         }

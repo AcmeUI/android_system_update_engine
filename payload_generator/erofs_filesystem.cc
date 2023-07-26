@@ -45,15 +45,16 @@ namespace {
 static constexpr int GetOccupiedSize(const struct erofs_inode* inode,
                                      erofs_off_t* size) {
   *size = 0;
+  struct erofs_sb_info *sbi = inode->sbi;
   switch (inode->datalayout) {
     case EROFS_INODE_FLAT_INLINE:
     case EROFS_INODE_FLAT_PLAIN:
     case EROFS_INODE_CHUNK_BASED:
       *size = inode->i_size;
       break;
-    case EROFS_INODE_FLAT_COMPRESSION_LEGACY:
-    case EROFS_INODE_FLAT_COMPRESSION:
-      *size = inode->u.i_blocks * EROFS_BLKSIZ;
+    case EROFS_INODE_COMPRESSED_FULL:
+    case EROFS_INODE_COMPRESSED_COMPACT:
+      *size = inode->u.i_blocks * erofs_blksiz(sbi);
       break;
     default:
       LOG(ERROR) << "unknown datalayout " << inode->datalayout;
@@ -166,7 +167,7 @@ bool IsErofsImage(const char* path) {
 
 }  // namespace
 
-static_assert(kBlockSize == EROFS_BLKSIZ);
+static struct erofs_sb_info sbi;
 
 std::unique_ptr<ErofsFilesystem> ErofsFilesystem::CreateFromFile(
     const std::string& filename, const CompressionAlgorithm& algo) {
@@ -182,20 +183,20 @@ std::unique_ptr<ErofsFilesystem> ErofsFilesystem::CreateFromFile(
   static std::mutex m;
   std::lock_guard g{m};
 
-  if (const auto err = dev_open_ro(filename.c_str()); err) {
+  if (const auto err = dev_open_ro(&sbi, filename.c_str()); err) {
     PLOG(INFO) << "Failed to open " << filename;
     return nullptr;
   }
   DEFER {
-    dev_close();
+    dev_close(&sbi);
   };
 
-  if (const auto err = erofs_read_superblock(); err) {
+  if (const auto err = erofs_read_superblock(&sbi); err) {
     PLOG(INFO) << "Failed to parse " << filename << " as EROFS image";
     return nullptr;
   }
   struct stat st {};
-  if (const auto err = fstat(erofs_devfd, &st); err) {
+  if (const auto err = fstat(sbi.devfd, &st); err) {
     PLOG(ERROR) << "Failed to stat() " << filename;
     return nullptr;
   }
@@ -228,7 +229,7 @@ bool ErofsFilesystem::GetFiles(const std::string& filename,
     if (info.ctx.de_ftype != EROFS_FT_REG_FILE) {
       return 0;
     }
-    struct erofs_inode inode {};
+    struct erofs_inode inode { .sbi = &sbi };
     inode.nid = info.ctx.de_nid;
     int err = erofs_read_inode_from_disk(&inode);
     if (err) {
@@ -253,7 +254,7 @@ bool ErofsFilesystem::GetFiles(const std::string& filename,
     File file;
     file.name = info.path;
     file.compressed_file_info.zero_padding_enabled =
-        erofs_sb_has_lz4_0padding();
+        erofs_sb_has_lz4_0padding(&sbi);
     file.is_compressed = compressed_size != uncompressed_size;
 
     file.file_stat.st_size = uncompressed_size;
